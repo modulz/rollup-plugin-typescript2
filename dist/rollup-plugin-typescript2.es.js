@@ -25044,7 +25044,7 @@ function createFilter(context, pluginOptions, parsedConfig) {
     }
     context.debug(() => `included:\n${JSON.stringify(included, undefined, 4)}`);
     context.debug(() => `excluded:\n${JSON.stringify(excluded, undefined, 4)}`);
-    return createRollupFilter(included, excluded);
+    return createRollupFilter(included, excluded, { resolve: pluginOptions.cwd });
 }
 
 function checkTsConfig(parsedConfig) {
@@ -28705,11 +28705,6 @@ var semver_42 = semver$2.coerce;
 const {promisify: promisify$2} = util;
 
 
-const defaults = {
-	mode: 0o777 & (~process.umask()),
-	fs
-};
-
 const useNativeRecursiveOption = semver$2.satisfies(process.version, '>=10.12.0');
 
 // https://github.com/nodejs/node/issues/8987
@@ -28726,6 +28721,19 @@ const checkPath = pth => {
 	}
 };
 
+const processOptions = options => {
+	// https://github.com/sindresorhus/make-dir/issues/18
+	const defaults = {
+		mode: 0o777 & (~process.umask()),
+		fs
+	};
+
+	return {
+		...defaults,
+		...options
+	};
+};
+
 const permissionError = pth => {
 	// This replicates the exception of `fs.mkdir` with native the
 	// `recusive` option when run on an invalid drive under Windows.
@@ -28739,10 +28747,7 @@ const permissionError = pth => {
 
 const makeDir = async (input, options) => {
 	checkPath(input);
-	options = {
-		...defaults,
-		...options
-	};
+	options = processOptions(options);
 
 	const mkdir = promisify$2(options.fs.mkdir);
 	const stat = promisify$2(options.fs.stat);
@@ -28782,8 +28787,12 @@ const makeDir = async (input, options) => {
 				return make(pth);
 			}
 
-			const stats = await stat(pth);
-			if (!stats.isDirectory()) {
+			try {
+				const stats = await stat(pth);
+				if (!stats.isDirectory()) {
+					throw new Error('The path is not a directory');
+				}
+			} catch (_) {
 				throw error;
 			}
 
@@ -28798,10 +28807,7 @@ var makeDir_1 = makeDir;
 
 var sync$3 = (input, options) => {
 	checkPath(input);
-	options = {
-		...defaults,
-		...options
-	};
+	options = processOptions(options);
 
 	if (useNativeRecursiveOption && options.fs.mkdirSync === fs.mkdirSync) {
 		const pth = path__default.resolve(input);
@@ -28860,39 +28866,54 @@ const isWritable = path => {
 	}
 };
 
+function useDirectory(directory, options) {
+	if (options.create) {
+		makeDir_1.sync(directory);
+	}
+
+	if (options.thunk) {
+		return (...arguments_) => path__default.join(directory, ...arguments_);
+	}
+
+	return directory;
+}
+
+function getNodeModuleDirectory(directory) {
+	const nodeModules = path__default.join(directory, 'node_modules');
+
+	if (
+		!isWritable(nodeModules) &&
+		(fs.existsSync(nodeModules) || !isWritable(path__default.join(directory)))
+	) {
+		return;
+	}
+
+	return nodeModules;
+}
+
 var findCacheDir = (options = {}) => {
-	const {name} = options;
-	let directory = options.cwd;
+	if (process.env.CACHE_DIR) {
+		return useDirectory(path__default.join(process.env.CACHE_DIR, 'find-cache-dir'), options);
+	}
+
+	let {cwd: directory = process.cwd()} = options;
 
 	if (options.files) {
 		directory = commondir(directory, options.files);
-	} else {
-		directory = directory || process.cwd();
 	}
 
 	directory = pkgDir_1.sync(directory);
 
-	if (directory) {
-		const nodeModules = path__default.join(directory, 'node_modules');
-		if (
-			!isWritable(nodeModules) &&
-			(fs.existsSync(nodeModules) || !isWritable(path__default.join(directory)))
-		) {
-			return undefined;
-		}
-
-		directory = path__default.join(directory, 'node_modules', '.cache', name);
-
-		if (directory && options.create) {
-			makeDir_1.sync(directory);
-		}
-
-		if (options.thunk) {
-			return (...arguments_) => path__default.join(directory, ...arguments_);
-		}
+	if (!directory) {
+		return;
 	}
 
-	return directory;
+	const nodeModules = getNodeModuleDirectory(directory);
+	if (!nodeModules) {
+		return undefined;
+	}
+
+	return useDirectory(path__default.join(directory, 'node_modules', '.cache', options.name), options);
 };
 
 const typescript = (options) => {
